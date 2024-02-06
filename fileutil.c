@@ -1,18 +1,17 @@
+//#define _XOPEN_SOURCE 500
 #include<stdio.h>
 #include<ftw.h>
 #include<regex.h>
 #include<string.h>
 #include<stdlib.h>
 
-// fileutil [ root_dir] filename 
-// fileutil [root_dir] [storage_dir] [options] filename
-// fileutil [root_dir] [storage_dir] extension
-
 char *targetFile;
 char *opr;  // copy or move option.
 char *destinationFolder;  // to copy or move into.
 int fileCount=0;
 char *exten;  // extention of the file provided by user.
+char set[100][50];  // to track second occurance of files. (initial size is taken 100)
+int setsize=-1;  // keep track of set size.
 
 struct FTW {
     int base;
@@ -20,49 +19,15 @@ struct FTW {
     int flag;
 };   
 
-int validatePath (char *path) {
-    regex_t rx;
-    int retFlag;
+// UTILITY FUNCTIONS 
 
-    const char *ptn = "^(/[-_a-zA-Z0-9]+)+$";
-
-    // Compiling the pattern.
-    retFlag = regcomp(&rx, ptn, REG_EXTENDED);
-    if (retFlag != 0) {
-        return 0;  
-    }
-
-    // matching the pattern with filepath.
-    retFlag = regexec(&rx, path, 0, NULL, 0);
-    if (retFlag == 0) {
-        return 1;
-    }
-    else if (retFlag ==  REG_NOMATCH) {
-        return 0;
-    }
-
-    regfree(&rx);   
-}
-
+// to get extention from file name.
 char *getExtention(char *filename) {
     char *ext = strrchr(filename, '.');
     if (ext && ext != filename) {
         return ext + 1;  // returning position after '.'.
     }
     return NULL; // No extension found
-}
-
-int searchFile(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
-    // getting the filename from path by advancing poitner by offset value.
-    const char *filename = fpath + ftwbuf->base;
-    
-    // comparing current filename with target file 
-    if (strcmp(filename, targetFile) == 0) {
-        printf("%s\n", fpath);
-        return 1;  // to stop traversal.
-    }
-    return 0; // Continue traversal
-
 }
 
 int moveFile (const char *sourceFile, char *filename) {
@@ -86,9 +51,10 @@ int copyFile (const char *sourceFile, char *filename) {
     strcat(destinationFolder, "/");
     strcat(destinationFolder, filename);
 
-    printf("\nopening source: %s\n", sourceFile);
+    // opening file for binary reading
     FILE *source = fopen(sourceFile, "rb");
-    printf("\nopening dest: %s\n", filename);
+
+    // opening file for binary writing
     FILE *destination = fopen(destinationFolder, "wb");
 
     // checking if files opened successfully
@@ -98,6 +64,7 @@ int copyFile (const char *sourceFile, char *filename) {
     }
 
     int buff;
+    // Doing buffered read and write until hits end of file.
     while ((buff = fgetc(source)) != EOF) {
         fputc(buff, destination);
     }
@@ -109,46 +76,82 @@ int copyFile (const char *sourceFile, char *filename) {
     return 0;
 }
 
-int srchCpMv (const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
+int isVisited(char *fname) {  // returns 1 if filename found, 0 otherwise.
+    
+    for (int i=0; i<=setsize; i++) {
+        if (strcmp(set[i], fname) == 0) {  
+            return 1;  
+        }
+    }
+    return 0;
+}
+
+// Command 1
+int searchFile(const char *fpath, const struct stat *sb, int tf, struct FTW *ftwbuf) {
+
+    // getting the filename from path by advancing poitner by offset value.
+    const char *filename = fpath + ftwbuf->base;
+    
+    // comparing current filename with target file 
+    if (strcmp(filename, targetFile) == 0) {
+        printf("%s\n", fpath);
+        fileCount++;
+    }
+
+    return 0; // Continue traversal
+}
+
+// command 2
+int srchCpMv (const char *fpath, const struct stat *sb, int tf, struct FTW *ftwbuf) {
+
     const char *filename = fpath + ftwbuf->base;
     
     // comparing current filename with target file 
     if (strcmp(filename, targetFile) == 0) {
         printf("Found: %s\n", fpath);
 
-        // check operation.
+        // check the operation.
         if (strcmp(opr, "-mv") == 0) {  // move operation.
             moveFile(fpath, filename);
         }
         else if (strcmp(opr, "-cp") == 0) {  // copy operation.
             copyFile(fpath, filename);
         }
+        else {  
+            printf("fileutil: Invalid option");
+        }
         return 1; 
     }
     return 0; 
 }
 
-int createTar (const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
+// command 3
+int createTar (const char *fpath, const struct stat *sb, int tf, struct FTW *ftwbuf) {
 
+    // fetching file name from whole filepath
     char *filename = fpath + ftwbuf->base;
     char *ext = getExtention(filename);
-    printf("%s, %s\n", exten, ext);
+
     // comparing extention
     if (ext != NULL && (strcmp(ext, exten) == 0)) {
-        printf("  %s\n", fpath);
-        printf("Destination: %s\n", destinationFolder);
+
+        if (isVisited(filename) == 1) {  // if encounterd another file with same name
+            return 0;  // to continue from the next file in traversal
+        } 
+
+        setsize++;  // incresing set size by 1.
+        strcpy(set[setsize], filename);  //put first time encounterd filename in set.
+    
         // coping matched file to A1 folder.
-        char cmd[256];
+        char cmd[128];
         snprintf(cmd, sizeof(cmd), "cp %s %s", fpath, destinationFolder);
-      
+
         if (system(cmd) == 0) {
-            printf("fileutil: copied successfully");
+            fileCount++;
         }
         else {
-            printf("fileutil: error occured while creating an archive");
-        }
-
-        fileCount++; 
+           perror("copy file");
+        }      
     }
     return 0; 
 }
@@ -157,32 +160,23 @@ int main(int argc, char *argv[]) {
 
     // validating the command.
     if (argc == 3) {    //print the path if file found, unsuccessful otherwise.
-        if (validatePath(argv[1]) == 0) {
-            printf("fileutil: Provided file path is not valid\n");
-            return 1;
-        }
-
+       
         // assigning file path to global reference.
         targetFile = argv[2];
         int flags = 0;
         int isSuccess = nftw(argv[1], searchFile, 0, flags);
 
         if (isSuccess == -1) {
-            printf("fileutil: file tree traversal failed\n");
-            return 1;
+            perror("nftw");    
+            exit(EXIT_FAILURE);        
         }
-        if (isSuccess == 0) {
+        else if (isSuccess == 0 && fileCount == 0) {
             printf("fileutil: Search Unsuccessful\n");
         }
-        free(targetFile);
         return 0;
     }
     else if (argc == 5) {  // find and move/copy file to given directory.
-        if (validatePath(argv[1])==0 || validatePath(argv[2])==0) {
-            printf("fileutil: One or all provided file path is not valid\n");
-            return 1;
-        }
-        
+       
         destinationFolder = argv[2];
         opr = argv[3];
         targetFile = argv[4];
@@ -190,25 +184,17 @@ int main(int argc, char *argv[]) {
         int flags = 0;
         int isSuccess = nftw(argv[1], srchCpMv, 0, flags);
         if (isSuccess == -1) {
-            printf("fileutil: file tree traversal failed\n");
-            return 1;
+            perror("nftw");
+            exit(EXIT_FAILURE);
         }
         if (isSuccess == 0) {
             printf("fileutil: Search Unsuccessful\n");
         }
-        free(destinationFolder);
-        free(opr);
-        free(targetFile);
 
         return 0;
     }
     else if (argc == 4 ) {  // create tar file of files of given extention. 
-        if (validatePath(argv[1])==0 || validatePath(argv[2])==0) {
-            printf("fileutil: One or all provided file path is not valid\n");
-            return 1;
-        }
-
-        //exten = (char *)malloc(128 * sizeof(char));
+       
         exten = strdup(argv[3]);
         destinationFolder = argv[2];
 
@@ -217,28 +203,34 @@ int main(int argc, char *argv[]) {
         
         // create directory to store matching file.
         int dirStatus = mkdir(destinationFolder, 0777);
-        perror("File status /A1: ");
 
         int flags = 0;
         int isSuccess = nftw(argv[1], createTar, 0, flags);
         if (isSuccess == -1) {
-            printf("fileutil: failure occured\n");
-            return 1;
+            perror("nftw");
+            exit(EXIT_FAILURE);
         }
         if (isSuccess == 0) {
-            char cmd[256];
-            snprintf(cmd, sizeof(cmd), "tar -cf %s -C %s .", "A1.tar", destinationFolder);
+            char cmd[128];
+            snprintf(cmd, sizeof(cmd), "tar -cf %s -C %s .", "A1.tar", argv[2]);
 
             if (system(cmd) == 0) {
-                printf("fileutil: tar archieve of %d files created.", fileCount);
+                printf("fileutil: tar archieve of %d files created.\n", fileCount);
+
+                // removing temporary A1 directory.
                 snprintf(cmd, sizeof(cmd), "rm -r %s", destinationFolder);
                 system(cmd);
             }
             else {
-                printf("fileutil: error occured while creating an archive");
+                printf("fileutil: error occured while creating an archive.\n");
             }
 
-        }
+            for (int i=0; i<setsize; i++) {
+                
+                    printf("file %d: %s\n", i, set[i]);
+               
+            }
+        }     
         return 0;
 
     }
