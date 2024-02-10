@@ -1,8 +1,9 @@
-//#define _XOPEN_SOURCE 500
+#define _XOPEN_SOURCE 500
+#define _GNU_SOURCE
 #include<stdio.h>
 #include<ftw.h>
-#include<regex.h>
 #include<string.h>
+#include<errno.h>
 #include<stdlib.h>
 
 char *targetFile;
@@ -10,20 +11,14 @@ char *opr;  // copy or move option.
 char *destinationFolder;  // to copy or move into.
 int fileCount=0;
 char *exten;  // extention of the file provided by user.
-char set[100][50];  // to track second occurance of files. (initial size is taken 100)
+char set[100][50];  // to track second occurance of files. (initial size is taken 100 where each filename can have 50 characters) 
 int setsize=-1;  // keep track of set size.
-
-struct FTW {
-    int base;
-    int level;
-    int flag;
-};   
 
 // UTILITY FUNCTIONS 
 
 // to get extention from file name.
 char *getExtention(char *filename) {
-    char *ext = strrchr(filename, '.');
+    char *ext = strrchr(filename, '.');  //from last occurence of . extention begins
     if (ext && ext != filename) {
         return ext + 1;  // returning position after '.'.
     }
@@ -37,11 +32,12 @@ int moveFile (const char *sourceFile, char *filename) {
     strcat(destinationFolder, filename);
 
     if (rename(sourceFile, destinationFolder) == 0) {
-        printf("File moved to destination successfully.\n");
+        printf("File moved successfully. Path: %s\n", destinationFolder);
         return 0;
     } 
-    else {
-        perror("Error moving file.");
+    else 
+    {
+        perror("File Move");
         return -1;
     }
 }
@@ -59,7 +55,7 @@ int copyFile (const char *sourceFile, char *filename) {
 
     // checking if files opened successfully
     if (source == NULL || destination == NULL) {
-        perror("Couldn't open the file");
+        perror("Opening file");
         return -1;
     }
 
@@ -72,7 +68,7 @@ int copyFile (const char *sourceFile, char *filename) {
     fclose(source);
     fclose(destination);
 
-    printf("File copied successfully.\n");
+    printf("File copied successfully. Path: %s\n", destinationFolder);
     return 0;
 }
 
@@ -86,7 +82,7 @@ int isVisited(char *fname) {  // returns 1 if filename found, 0 otherwise.
     return 0;
 }
 
-// Command 1
+// Command 1      fileutil [root_path] filename
 int searchFile(const char *fpath, const struct stat *sb, int tf, struct FTW *ftwbuf) {
 
     // getting the filename from path by advancing poitner by offset value.
@@ -101,10 +97,10 @@ int searchFile(const char *fpath, const struct stat *sb, int tf, struct FTW *ftw
     return 0; // Continue traversal
 }
 
-// command 2
+// command 2     filename [source_path] [destination_path] [option] filename
 int srchCpMv (const char *fpath, const struct stat *sb, int tf, struct FTW *ftwbuf) {
 
-    const char *filename = fpath + ftwbuf->base;
+    char *filename = strdup(fpath + ftwbuf->base);
     
     // comparing current filename with target file 
     if (strcmp(filename, targetFile) == 0) {
@@ -125,11 +121,11 @@ int srchCpMv (const char *fpath, const struct stat *sb, int tf, struct FTW *ftwb
     return 0; 
 }
 
-// command 3
+// command 3    fileutil [source_path] [destination_path] extention
 int createTar (const char *fpath, const struct stat *sb, int tf, struct FTW *ftwbuf) {
 
     // fetching file name from whole filepath
-    char *filename = fpath + ftwbuf->base;
+    char *filename = strdup(fpath + ftwbuf->base);
     char *ext = getExtention(filename);
 
     // comparing extention
@@ -138,7 +134,7 @@ int createTar (const char *fpath, const struct stat *sb, int tf, struct FTW *ftw
         if (isVisited(filename) == 1) {  // if encounterd another file with same name
             return 0;  // to continue from the next file in traversal
         } 
-
+        printf("found: %s\n", fpath);
         setsize++;  // incresing set size by 1.
         strcpy(set[setsize], filename);  //put first time encounterd filename in set.
     
@@ -151,6 +147,7 @@ int createTar (const char *fpath, const struct stat *sb, int tf, struct FTW *ftw
         }
         else {
            perror("copy file");
+           return -1;
         }      
     }
     return 0; 
@@ -164,7 +161,7 @@ int main(int argc, char *argv[]) {
         // assigning file path to global reference.
         targetFile = argv[2];
         int flags = 0;
-        int isSuccess = nftw(argv[1], searchFile, 0, flags);
+        int isSuccess = nftw(argv[1], searchFile, 0, FTW_PHYS);
 
         if (isSuccess == -1) {
             perror("nftw");    
@@ -181,8 +178,7 @@ int main(int argc, char *argv[]) {
         opr = argv[3];
         targetFile = argv[4];
 
-        int flags = 0;
-        int isSuccess = nftw(argv[1], srchCpMv, 0, flags);
+        int isSuccess = nftw(argv[1], srchCpMv, 0, FTW_PHYS);
         if (isSuccess == -1) {
             perror("nftw");
             exit(EXIT_FAILURE);
@@ -203,9 +199,22 @@ int main(int argc, char *argv[]) {
         
         // create directory to store matching file.
         int dirStatus = mkdir(destinationFolder, 0777);
+        if (dirStatus == -1) {
+            if (errno == ENOENT) {  // error indicating that provided path is not exists
+                // creating the path             
+                char cmd[128];
+                snprintf(cmd, sizeof(cmd), "mkdir -p %s", destinationFolder);  // creates directory if not exising already.
+                if (system(cmd) == -1) 
+                    perror("Mkdir");              
+            } 
+            else {
+                perror("Error creating directory");
+                exit(EXIT_FAILURE);
+            }
+        }
 
         int flags = 0;
-        int isSuccess = nftw(argv[1], createTar, 0, flags);
+        int isSuccess = nftw(argv[1], createTar, 0, FTW_PHYS);
         if (isSuccess == -1) {
             perror("nftw");
             exit(EXIT_FAILURE);
@@ -224,15 +233,8 @@ int main(int argc, char *argv[]) {
             else {
                 printf("fileutil: error occured while creating an archive.\n");
             }
-
-            for (int i=0; i<setsize; i++) {
-                
-                    printf("file %d: %s\n", i, set[i]);
-               
-            }
         }     
         return 0;
-
     }
     else if (argc < 3) {
         printf("fileutil: Not enough arguments\n\n");

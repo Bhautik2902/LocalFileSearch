@@ -1,1 +1,0 @@
-will the global variable of parent process be accessible in child process?
